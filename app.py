@@ -2,8 +2,8 @@ import streamlit as st
 import cv2
 import math
 import tempfile
-import os
 import av
+import os
 from ultralytics import YOLO
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 
@@ -19,7 +19,6 @@ modelo = cargar_modelo()
 DISTANCIA_MAXIMA = 300
 SALTAR_FRAMES = 5 
 
-# Configuración STUN para WebRTC
 RTC_CONFIG = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
 
 modo = st.sidebar.radio("Elige un modo:", ["Cámara en Vivo", "Subir Video"])
@@ -55,7 +54,7 @@ def dibujar_detecciones(frame, personas, perros):
     return frame
 
 # ==========================================
-# MODO 1: CÁMARA EN VIVO (CORREGIDO PARA CELULAR)
+# MODO 1: CÁMARA EN VIVO
 # ==========================================
 class ProcesadorVideoYOLO(VideoProcessorBase):
     def __init__(self):
@@ -85,42 +84,40 @@ class ProcesadorVideoYOLO(VideoProcessorBase):
         return av.VideoFrame.from_ndarray(img_dibujada, format="bgr24")
 
 if modo == "Cámara en Vivo":
-    st.write("Presiona 'START' para activar la cámara trasera de tu celular.")
+    st.write("Presiona 'START'. Usa el botón 'Select Device' que aparecerá abajo para cambiar a la cámara trasera.")
     webrtc_streamer(
         key="detector-perros",
         video_processor_factory=ProcesadorVideoYOLO,
         rtc_configuration=RTC_CONFIG,
-        # AQUI ESTA LA MAGIA PARA CELULARES: Pedimos explicitamente la cámara trasera (environment)
-        media_stream_constraints={
-            "video": {"facingMode": "environment"}, 
-            "audio": False
-        } 
+        # Dejamos que el navegador decida, evita bloqueos en móviles
+        media_stream_constraints={"video": True, "audio": False} 
     )
 
 # ==========================================
-# MODO 2: SUBIR VIDEO (CORREGIDO PARA FLUIDEZ)
+# MODO 2: SUBIR VIDEO
 # ==========================================
 elif modo == "Subir Video":
     archivo_video = st.file_uploader("Selecciona un video", type=["mp4", "mov", "avi"])
 
     if archivo_video is not None:
-        st.info("Procesando video... Esto puede tomar un momento. Al terminar se reproducirá fluidamente.")
+        st.info("Procesando video... Esto puede tomar un momento.")
         barra_progreso = st.progress(0)
         
-        # Crear archivos temporales
         tfile_in = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
         tfile_in.write(archivo_video.read())
-        ruta_salida_bruta = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
+        
+        # CAMBIO CLAVE: Usar formato .webm que los navegadores sí entienden nativamente
+        ruta_salida_webm = tempfile.NamedTemporaryFile(delete=False, suffix='.webm').name
         
         cap = cv2.VideoCapture(tfile_in.name)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        fps = int(cap.get(cv2.CAP_PROP_FPS))
+        fps = cap.get(cv2.CAP_PROP_FPS)
         ancho = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         alto = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         
-        # Preparar escritura del video
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(ruta_salida_bruta, fourcc, fps, (ancho, alto))
+        # Códec VP80 compatible con la web
+        fourcc = cv2.VideoWriter_fourcc(*'VP80')
+        out = cv2.VideoWriter(ruta_salida_webm, fourcc, fps, (ancho, alto))
         
         frame_count = 0
         last_personas, last_perros = [], []
@@ -131,8 +128,6 @@ elif modo == "Subir Video":
                 break
                 
             frame_count += 1
-            
-            # Actualizar barra de progreso visual
             if total_frames > 0:
                 barra_progreso.progress(min(frame_count / total_frames, 1.0))
             
@@ -156,18 +151,8 @@ elif modo == "Subir Video":
         cap.release()
         out.release()
         
-        st.write("Adaptando el formato del video para la web...")
-        # TRUCO PARA WEB: Convertimos el video a un formato H264 compatible con todos los navegadores usando ffmpeg
-        ruta_final_web = ruta_salida_bruta.replace(".mp4", "_web.mp4")
-        os.system(f"ffmpeg -y -i {ruta_salida_bruta} -vcodec libx264 {ruta_final_web}")
-        
         st.success("¡Video procesado con éxito!")
         
-        # Mostrar el video resultante fluidamente
-        if os.path.exists(ruta_final_web):
-            with open(ruta_final_web, 'rb') as v_file:
-                st.video(v_file.read())
-        else:
-            # Plan B por si falla la conversión
-            with open(ruta_salida_bruta, 'rb') as v_file:
-                st.video(v_file.read())
+        # Mostrar el video WebM
+        with open(ruta_salida_webm, 'rb') as v_file:
+            st.video(v_file.read(), format="video/webm")
