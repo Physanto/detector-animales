@@ -84,13 +84,20 @@ class ProcesadorVideoYOLO(VideoProcessorBase):
         return av.VideoFrame.from_ndarray(img_dibujada, format="bgr24")
 
 if modo == "Cámara en Vivo":
-    st.write("Presiona 'START'. Usa el botón 'Select Device' que aparecerá abajo para cambiar a la cámara trasera.")
+    st.write("Presiona 'START'. Si pide permisos, acéptalos.")
+    
     webrtc_streamer(
         key="detector-perros",
         video_processor_factory=ProcesadorVideoYOLO,
         rtc_configuration=RTC_CONFIG,
-        # Dejamos que el navegador decida, evita bloqueos en móviles
-        media_stream_constraints={"video": True, "audio": False} 
+        # Ajuste para compatibilidad móvil y cámara trasera
+        media_stream_constraints={
+            "video": {
+                "facingMode": "environment", # Intenta usar la cámara trasera por defecto
+            },
+            "audio": False
+        },
+        async_processing=True, # Mejora el rendimiento en dispositivos menos potentes
     )
 
 # ==========================================
