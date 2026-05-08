@@ -19,7 +19,16 @@ modelo = cargar_modelo()
 DISTANCIA_MAXIMA = 300
 SALTAR_FRAMES = 5 
 
-RTC_CONFIG = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
+# --- CORRECCIÓN 1: Más servidores STUN para evitar bloqueos de red móvil ---
+RTC_CONFIG = RTCConfiguration(
+    {"iceServers": [
+        {"urls": ["stun:stun.l.google.com:19302"]},
+        {"urls": ["stun:stun1.l.google.com:19302"]},
+        {"urls": ["stun:stun2.l.google.com:19302"]},
+        {"urls": ["stun:stun3.l.google.com:19302"]},
+        {"urls": ["stun:stun4.l.google.com:19302"]}
+    ]}
+)
 
 modo = st.sidebar.radio("Elige un modo:", ["Cámara en Vivo", "Subir Video"])
 
@@ -68,7 +77,7 @@ class ProcesadorVideoYOLO(VideoProcessorBase):
         
         if self.frame_count % SALTAR_FRAMES == 0:
             resultados = modelo.predict(img, classes=[0, 16], verbose=False)
-            self.last_personas, self.last_perros = [], []
+            self.last_personas, self.last_perros = [] , []
             
             for box in resultados[0].boxes:
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
@@ -90,14 +99,20 @@ if modo == "Cámara en Vivo":
         key="detector-perros",
         video_processor_factory=ProcesadorVideoYOLO,
         rtc_configuration=RTC_CONFIG,
-        # Ajuste para compatibilidad móvil y cámara trasera
         media_stream_constraints={
             "video": {
-                "facingMode": "environment", # Intenta usar la cámara trasera por defecto
+                "facingMode": "environment", # Cámara trasera
             },
             "audio": False
         },
-        async_processing=True, # Mejora el rendimiento en dispositivos menos potentes
+        # --- CORRECCIÓN 2: Atributos HTML obligatorios para móviles (Especialmente iOS) ---
+        video_html_attrs={
+            "style": {"width": "100%", "margin": "0 auto", "border": "2px solid #ccc"},
+            "controls": False,
+            "autoPlay": True,
+            "playsinline": True, # ¡ESTO SOLUCIONA LA PANTALLA NEGRA EN MÓVILES!
+        },
+        async_processing=True,
     )
 
 # ==========================================
@@ -113,7 +128,6 @@ elif modo == "Subir Video":
         tfile_in = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
         tfile_in.write(archivo_video.read())
         
-        # CAMBIO CLAVE: Usar formato .webm que los navegadores sí entienden nativamente
         ruta_salida_webm = tempfile.NamedTemporaryFile(delete=False, suffix='.webm').name
         
         cap = cv2.VideoCapture(tfile_in.name)
@@ -122,7 +136,6 @@ elif modo == "Subir Video":
         ancho = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         alto = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         
-        # Códec VP80 compatible con la web
         fourcc = cv2.VideoWriter_fourcc(*'VP80')
         out = cv2.VideoWriter(ruta_salida_webm, fourcc, fps, (ancho, alto))
         
@@ -160,6 +173,5 @@ elif modo == "Subir Video":
         
         st.success("¡Video procesado con éxito!")
         
-        # Mostrar el video WebM
         with open(ruta_salida_webm, 'rb') as v_file:
             st.video(v_file.read(), format="video/webm")
