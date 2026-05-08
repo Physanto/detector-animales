@@ -2,6 +2,7 @@ import streamlit as st
 import cv2
 import math
 import tempfile
+import os
 import av
 from ultralytics import YOLO
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
@@ -9,41 +10,35 @@ from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfigurati
 st.set_page_config(page_title="Detector de Perros", page_icon="🐕")
 st.title("Detector de Perros y Dueños 🐕🚶‍♂️")
 
-# Configurar el modelo en caché
 @st.cache_resource
 def cargar_modelo():
     return YOLO('yolov8n.pt')
 
 modelo = cargar_modelo()
 
-# Parámetros globales
 DISTANCIA_MAXIMA = 300
-SALTAR_FRAMES = 5  # La IA solo procesará 1 de cada 5 fotogramas (reduce el lag)
+SALTAR_FRAMES = 5 
 
-# Configuración para que el video en vivo funcione en redes móviles
+# Configuración STUN para WebRTC
 RTC_CONFIG = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
 
-# Seleccionar modo
 modo = st.sidebar.radio("Elige un modo:", ["Cámara en Vivo", "Subir Video"])
 
 # ==========================================
-# LÓGICA DE DIBUJO (Se usa en ambos modos)
+# LÓGICA DE DIBUJO
 # ==========================================
 def dibujar_detecciones(frame, personas, perros):
-    # Dibujar personas
     for p in personas:
         x1, y1, x2, y2 = p['caja']
         cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
         
-    # Dibujar perros con lógica de distancia
     for d in perros:
         x1, y1, x2, y2 = d['caja']
         centro_perro = d['centro']
         tiene_dueno = False
         
         for p in personas:
-            distancia = math.dist(centro_perro, p['centro'])
-            if distancia < DISTANCIA_MAXIMA:
+            if math.dist(centro_perro, p['centro']) < DISTANCIA_MAXIMA:
                 tiene_dueno = True
                 break
                 
@@ -60,7 +55,7 @@ def dibujar_detecciones(frame, personas, perros):
     return frame
 
 # ==========================================
-# MODO 1: CÁMARA EN VIVO (WEBRTC)
+# MODO 1: CÁMARA EN VIVO (CORREGIDO PARA CELULAR)
 # ==========================================
 class ProcesadorVideoYOLO(VideoProcessorBase):
     def __init__(self):
@@ -72,11 +67,9 @@ class ProcesadorVideoYOLO(VideoProcessorBase):
         img = frame.to_ndarray(format="bgr24")
         self.frame_count += 1
         
-        # Solo procesamos con YOLO cada X frames para evitar lag
         if self.frame_count % SALTAR_FRAMES == 0:
             resultados = modelo.predict(img, classes=[0, 16], verbose=False)
-            personas_temp = []
-            perros_temp = []
+            self.last_personas, self.last_perros = [], []
             
             for box in resultados[0].boxes:
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
@@ -84,46 +77,53 @@ class ProcesadorVideoYOLO(VideoProcessorBase):
                 centro = ((x1 + x2) // 2, (y1 + y2) // 2)
                 
                 if clase == 0:
-                    personas_temp.append({'caja': (x1, y1, x2, y2), 'centro': centro})
+                    self.last_personas.append({'caja': (x1, y1, x2, y2), 'centro': centro})
                 elif clase == 16:
-                    perros_temp.append({'caja': (x1, y1, x2, y2), 'centro': centro})
-            
-            # Actualizamos las cajas guardadas
-            self.last_personas = personas_temp
-            self.last_perros = perros_temp
+                    self.last_perros.append({'caja': (x1, y1, x2, y2), 'centro': centro})
 
-        # Dibujamos las últimas cajas conocidas en el fotograma actual
         img_dibujada = dibujar_detecciones(img, self.last_personas, self.last_perros)
-        
         return av.VideoFrame.from_ndarray(img_dibujada, format="bgr24")
 
 if modo == "Cámara en Vivo":
-    st.write("Presiona 'START' y permite el acceso a la cámara de tu celular.")
+    st.write("Presiona 'START' para activar la cámara trasera de tu celular.")
     webrtc_streamer(
         key="detector-perros",
         video_processor_factory=ProcesadorVideoYOLO,
         rtc_configuration=RTC_CONFIG,
-        media_stream_constraints={"video": True, "audio": False} # No necesitamos audio
+        # AQUI ESTA LA MAGIA PARA CELULARES: Pedimos explicitamente la cámara trasera (environment)
+        media_stream_constraints={
+            "video": {"facingMode": "environment"}, 
+            "audio": False
+        } 
     )
 
 # ==========================================
-# MODO 2: SUBIR VIDEO
+# MODO 2: SUBIR VIDEO (CORREGIDO PARA FLUIDEZ)
 # ==========================================
 elif modo == "Subir Video":
     archivo_video = st.file_uploader("Selecciona un video", type=["mp4", "mov", "avi"])
 
     if archivo_video is not None:
-        st.write("Procesando video de forma optimizada...")
+        st.info("Procesando video... Esto puede tomar un momento. Al terminar se reproducirá fluidamente.")
+        barra_progreso = st.progress(0)
         
-        tfile = tempfile.NamedTemporaryFile(delete=False)
-        tfile.write(archivo_video.read())
-        cap = cv2.VideoCapture(tfile.name)
+        # Crear archivos temporales
+        tfile_in = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
+        tfile_in.write(archivo_video.read())
+        ruta_salida_bruta = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
         
-        espacio_video = st.empty()
+        cap = cv2.VideoCapture(tfile_in.name)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = int(cap.get(cv2.CAP_PROP_FPS))
+        ancho = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        alto = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        
+        # Preparar escritura del video
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(ruta_salida_bruta, fourcc, fps, (ancho, alto))
         
         frame_count = 0
-        last_personas = []
-        last_perros = []
+        last_personas, last_perros = [], []
         
         while cap.isOpened():
             ret, frame = cap.read()
@@ -132,11 +132,13 @@ elif modo == "Subir Video":
                 
             frame_count += 1
             
-            # Procesar 1 de cada X frames
+            # Actualizar barra de progreso visual
+            if total_frames > 0:
+                barra_progreso.progress(min(frame_count / total_frames, 1.0))
+            
             if frame_count % SALTAR_FRAMES == 0:
                 resultados = modelo.predict(frame, classes=[0, 16], verbose=False)
-                last_personas = []
-                last_perros = []
+                last_personas, last_perros = [], []
                 
                 for box in resultados[0].boxes:
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
@@ -148,10 +150,24 @@ elif modo == "Subir Video":
                     elif clase == 16:
                         last_perros.append({'caja': (x1, y1, x2, y2), 'centro': centro})
                         
-            # Dibujar usando los datos guardados
-            frame = dibujar_detecciones(frame, last_personas, last_perros)
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            espacio_video.image(frame_rgb, channels="RGB", use_container_width=True)
+            frame_procesado = dibujar_detecciones(frame, last_personas, last_perros)
+            out.write(frame_procesado)
 
         cap.release()
-        st.success("¡Análisis de video completado!")
+        out.release()
+        
+        st.write("Adaptando el formato del video para la web...")
+        # TRUCO PARA WEB: Convertimos el video a un formato H264 compatible con todos los navegadores usando ffmpeg
+        ruta_final_web = ruta_salida_bruta.replace(".mp4", "_web.mp4")
+        os.system(f"ffmpeg -y -i {ruta_salida_bruta} -vcodec libx264 {ruta_final_web}")
+        
+        st.success("¡Video procesado con éxito!")
+        
+        # Mostrar el video resultante fluidamente
+        if os.path.exists(ruta_final_web):
+            with open(ruta_final_web, 'rb') as v_file:
+                st.video(v_file.read())
+        else:
+            # Plan B por si falla la conversión
+            with open(ruta_salida_bruta, 'rb') as v_file:
+                st.video(v_file.read())
