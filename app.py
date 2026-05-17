@@ -3,6 +3,7 @@ import cv2
 import math
 import tempfile
 import numpy as np
+import os
 
 from ultralytics import YOLO
 
@@ -35,12 +36,12 @@ DISTANCIA_MAXIMA = 300
 # ==========================================
 
 modo = st.sidebar.radio(
-    "Selecciona el modo:",
+    "Selecciona una opción:",
     ["Tomar Foto", "Subir Imagen", "Subir Video"]
 )
 
 # ==========================================
-# FUNCIÓN DE DETECCIÓN
+# DETECCIÓN
 # ==========================================
 
 def detectar(frame):
@@ -149,7 +150,7 @@ def detectar(frame):
     return frame
 
 # ==========================================
-# MODO FOTO CÁMARA
+# TOMAR FOTO
 # ==========================================
 
 if modo == "Tomar Foto":
@@ -179,7 +180,7 @@ if modo == "Tomar Foto":
         )
 
 # ==========================================
-# MODO SUBIR IMAGEN
+# SUBIR IMAGEN
 # ==========================================
 
 elif modo == "Subir Imagen":
@@ -212,7 +213,7 @@ elif modo == "Subir Imagen":
         )
 
 # ==========================================
-# MODO VIDEO
+# SUBIR VIDEO
 # ==========================================
 
 elif modo == "Subir Video":
@@ -224,17 +225,41 @@ elif modo == "Subir Video":
 
     if archivo_video is not None:
 
-        st.write("Procesando video...")
+        st.info("Procesando video...")
 
-        tfile = tempfile.NamedTemporaryFile(delete=False)
-        tfile.write(archivo_video.read())
+        # Guardar video temporal original
+        temp_input = tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=".mp4"
+        )
 
-        cap = cv2.VideoCapture(tfile.name)
+        temp_input.write(archivo_video.read())
 
-        stframe = st.empty()
+        input_path = temp_input.name
 
-        frame_skip = 5
-        contador = 0
+        cap = cv2.VideoCapture(input_path)
+
+        # Información del video
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+
+        # Video de salida
+        output_path = "video_procesado.mp4"
+
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+
+        out = cv2.VideoWriter(
+            output_path,
+            fourcc,
+            fps,
+            (width, height)
+        )
+
+        progreso = st.progress(0)
+
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        current_frame = 0
 
         while cap.isOpened():
 
@@ -243,23 +268,33 @@ elif modo == "Subir Video":
             if not ret:
                 break
 
-            contador += 1
+            frame = detectar(frame)
 
-            if contador % frame_skip == 0:
+            out.write(frame)
 
-                frame = detectar(frame)
+            current_frame += 1
 
-                frame_rgb = cv2.cvtColor(
-                    frame,
-                    cv2.COLOR_BGR2RGB
-                )
-
-                stframe.image(
-                    frame_rgb,
-                    channels="RGB",
-                    use_container_width=True
-                )
+            progreso.progress(
+                min(current_frame / total_frames, 1.0)
+            )
 
         cap.release()
+        out.release()
 
         st.success("✅ Video procesado")
+
+        # Mostrar video
+        st.video(output_path)
+
+        # Descargar video
+        with open(output_path, "rb") as file:
+
+            st.download_button(
+                label="⬇️ Descargar Video Procesado",
+                data=file,
+                file_name="video_procesado.mp4",
+                mime="video/mp4"
+            )
+
+        # Limpiar archivos temporales
+        os.remove(input_path)
