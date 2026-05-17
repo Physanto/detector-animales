@@ -2,10 +2,13 @@ import streamlit as st
 import cv2
 import math
 import tempfile
-import av
+import numpy as np
 
 from ultralytics import YOLO
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
+
+# ==========================================
+# CONFIGURACIÓN
+# ==========================================
 
 st.set_page_config(
     page_title="Detector de Perros",
@@ -15,28 +18,71 @@ st.set_page_config(
 
 st.title("🐕 Detector de Perros y Personas")
 
+# ==========================================
+# CARGAR MODELO
+# ==========================================
+
 @st.cache_resource
 def cargar_modelo():
-    modelo = YOLO("yolov8n.pt")
-    return modelo
+    return YOLO("yolov8n.pt")
 
 modelo = cargar_modelo()
 
 DISTANCIA_MAXIMA = 300
-SALTAR_FRAMES = 5
 
-RTC_CONFIG = RTCConfiguration({
-    "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
-})
+# ==========================================
+# SIDEBAR
+# ==========================================
 
 modo = st.sidebar.radio(
     "Selecciona el modo:",
-    ["Cámara en Vivo", "Subir Video"]
+    ["Tomar Foto", "Subir Imagen", "Subir Video"]
 )
 
-def dibujar_detecciones(frame, personas, perros):
+# ==========================================
+# FUNCIÓN DE DETECCIÓN
+# ==========================================
 
+def detectar(frame):
+
+    resultados = modelo.predict(
+        frame,
+        classes=[0, 16],
+        verbose=False
+    )
+
+    personas = []
+    perros = []
+
+    for box in resultados[0].boxes:
+
+        x1, y1, x2, y2 = map(
+            int,
+            box.xyxy[0]
+        )
+
+        clase = int(box.cls[0])
+
+        centro = (
+            (x1 + x2) // 2,
+            (y1 + y2) // 2
+        )
+
+        if clase == 0:
+            personas.append({
+                "caja": (x1, y1, x2, y2),
+                "centro": centro
+            })
+
+        elif clase == 16:
+            perros.append({
+                "caja": (x1, y1, x2, y2),
+                "centro": centro
+            })
+
+    # Dibujar personas
     for persona in personas:
+
         x1, y1, x2, y2 = persona["caja"]
 
         cv2.rectangle(
@@ -52,22 +98,22 @@ def dibujar_detecciones(frame, personas, perros):
             "Persona",
             (x1, y1 - 10),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
+            0.7,
             (255, 0, 0),
             2
         )
 
+    # Dibujar perros
     for perro in perros:
 
         x1, y1, x2, y2 = perro["caja"]
-        centro_perro = perro["centro"]
 
         tiene_dueno = False
 
         for persona in personas:
 
             distancia = math.dist(
-                centro_perro,
+                perro["centro"],
                 persona["centro"]
             )
 
@@ -95,90 +141,79 @@ def dibujar_detecciones(frame, personas, perros):
             etiqueta,
             (x1, y1 - 10),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
+            0.7,
             color,
             2
         )
 
     return frame
 
-class ProcesadorVideoYOLO(VideoProcessorBase):
+# ==========================================
+# MODO FOTO CÁMARA
+# ==========================================
 
-    def __init__(self):
-        self.frame_count = 0
-        self.last_personas = []
-        self.last_perros = []
+if modo == "Tomar Foto":
 
-    def recv(self, frame):
+    foto = st.camera_input("📸 Toma una foto")
 
-        img = frame.to_ndarray(format="bgr24")
+    if foto is not None:
 
-        self.frame_count += 1
-
-        if self.frame_count % SALTAR_FRAMES == 0:
-
-            resultados = modelo.predict(
-                img,
-                classes=[0, 16],
-                verbose=False
-            )
-
-            personas_temp = []
-            perros_temp = []
-
-            for box in resultados[0].boxes:
-
-                x1, y1, x2, y2 = map(
-                    int,
-                    box.xyxy[0]
-                )
-
-                clase = int(box.cls[0])
-
-                centro = (
-                    (x1 + x2) // 2,
-                    (y1 + y2) // 2
-                )
-
-                if clase == 0:
-                    personas_temp.append({
-                        "caja": (x1, y1, x2, y2),
-                        "centro": centro
-                    })
-
-                elif clase == 16:
-                    perros_temp.append({
-                        "caja": (x1, y1, x2, y2),
-                        "centro": centro
-                    })
-
-            self.last_personas = personas_temp
-            self.last_perros = perros_temp
-
-        img = dibujar_detecciones(
-            img,
-            self.last_personas,
-            self.last_perros
+        file_bytes = np.asarray(
+            bytearray(foto.read()),
+            dtype=np.uint8
         )
 
-        return av.VideoFrame.from_ndarray(
-            img,
-            format="bgr24"
+        frame = cv2.imdecode(file_bytes, 1)
+
+        resultado = detectar(frame)
+
+        resultado_rgb = cv2.cvtColor(
+            resultado,
+            cv2.COLOR_BGR2RGB
         )
 
-if modo == "Cámara en Vivo":
+        st.image(
+            resultado_rgb,
+            channels="RGB",
+            use_container_width=True
+        )
 
-    st.info("Presiona START y acepta permisos de cámara.")
+# ==========================================
+# MODO SUBIR IMAGEN
+# ==========================================
 
-    webrtc_streamer(
-        key="detector-perros",
-        video_processor_factory=ProcesadorVideoYOLO,
-        rtc_configuration=RTC_CONFIG,
-        media_stream_constraints={
-            "video": True,
-            "audio": False
-        }
+elif modo == "Subir Imagen":
+
+    archivo = st.file_uploader(
+        "Sube una imagen",
+        type=["jpg", "jpeg", "png"]
     )
+
+    if archivo is not None:
+
+        file_bytes = np.asarray(
+            bytearray(archivo.read()),
+            dtype=np.uint8
+        )
+
+        frame = cv2.imdecode(file_bytes, 1)
+
+        resultado = detectar(frame)
+
+        resultado_rgb = cv2.cvtColor(
+            resultado,
+            cv2.COLOR_BGR2RGB
+        )
+
+        st.image(
+            resultado_rgb,
+            channels="RGB",
+            use_container_width=True
+        )
+
+# ==========================================
+# MODO VIDEO
+# ==========================================
 
 elif modo == "Subir Video":
 
@@ -196,12 +231,10 @@ elif modo == "Subir Video":
 
         cap = cv2.VideoCapture(tfile.name)
 
-        espacio_video = st.empty()
+        stframe = st.empty()
 
-        frame_count = 0
-
-        last_personas = []
-        last_perros = []
+        frame_skip = 5
+        contador = 0
 
         while cap.isOpened():
 
@@ -210,62 +243,23 @@ elif modo == "Subir Video":
             if not ret:
                 break
 
-            frame_count += 1
+            contador += 1
 
-            if frame_count % SALTAR_FRAMES == 0:
+            if contador % frame_skip == 0:
 
-                resultados = modelo.predict(
+                frame = detectar(frame)
+
+                frame_rgb = cv2.cvtColor(
                     frame,
-                    classes=[0, 16],
-                    verbose=False
+                    cv2.COLOR_BGR2RGB
                 )
 
-                last_personas = []
-                last_perros = []
-
-                for box in resultados[0].boxes:
-
-                    x1, y1, x2, y2 = map(
-                        int,
-                        box.xyxy[0]
-                    )
-
-                    clase = int(box.cls[0])
-
-                    centro = (
-                        (x1 + x2) // 2,
-                        (y1 + y2) // 2
-                    )
-
-                    if clase == 0:
-                        last_personas.append({
-                            "caja": (x1, y1, x2, y2),
-                            "centro": centro
-                        })
-
-                    elif clase == 16:
-                        last_perros.append({
-                            "caja": (x1, y1, x2, y2),
-                            "centro": centro
-                        })
-
-            frame = dibujar_detecciones(
-                frame,
-                last_personas,
-                last_perros
-            )
-
-            frame_rgb = cv2.cvtColor(
-                frame,
-                cv2.COLOR_BGR2RGB
-            )
-
-            espacio_video.image(
-                frame_rgb,
-                channels="RGB",
-                use_container_width=True
-            )
+                stframe.image(
+                    frame_rgb,
+                    channels="RGB",
+                    use_container_width=True
+                )
 
         cap.release()
 
-        st.success("✅ Video procesado correctamente")
+        st.success("✅ Video procesado")
